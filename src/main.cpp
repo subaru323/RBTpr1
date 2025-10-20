@@ -1,35 +1,50 @@
 #include <M5Unified.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BME280.h>
+#include <DHT.h>
+#include <BH1750.h>
 
-#define PHOTO_PIN 36
-#define LOAD_RESISTANCE 10000.0
-#define MAX_DATA_POINTS 60
-#define GRAY M5.Lcd.color565(100, 100, 100)
-#define ORANGE M5.Lcd.color565(255, 165, 0)
-#define PURPLE M5.Lcd.color565(128, 0, 128)
+// ====== センサー設定 ======
+#define DHTPIN 16
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+BH1750 lightMeter;
+
+// ====== 出力ピン ======
+const int ledPin = 25;
+
+// ====== しきい値 ======
+const int LIGHT_THRESHOLD = 100; // Lux
+const float TEMP_GRAPH_MIN = 10.0; 
+const float TEMP_GRAPH_MAX = 40.0; 
 #define LUX_MAX_VALUE 1000.0
 
-Adafruit_BME280 bme; // BME280 センサー
-
-// データ配列
+// ====== データ配列 ======
+#define MAX_DATA_POINTS 60
 float tempData[MAX_DATA_POINTS];
 float humData[MAX_DATA_POINTS];
 float luxData[MAX_DATA_POINTS];
 int dataIndex = 0;
 
-// 画面モード
-int screenMode = 0; // 0:通常 1:グラフ 2:平均値 3:デバイス状態
+// ====== 画面モード ======
+int screenMode = 0; // 0:通常 1:グラフ 2:統計 3:LED状態
 
-// 通常画面の背景色
-const uint16_t NORMAL_BG = M5.Lcd.color565(210, 180, 140);
+// ====== 色定義 ======
+#define GRAY M5.Lcd.color565(100, 100, 100)
+#define ORANGE M5.Lcd.color565(255, 165, 0)
+#define PURPLE M5.Lcd.color565(128, 0, 128)
+#define NORMAL_BG M5.Lcd.color565(210, 180, 140)
 
-// ================= 関数プロトタイプ =================
+// ====== タイマー ======
+unsigned long lastUpdate = 0;
+const unsigned long UPDATE_INTERVAL = 1000; // 1秒
+
+// ====== 関数プロトタイプ ======
 void drawNormalScreen();
 void drawGraphScreen();
 void drawStatsScreen();
-void drawDeviceScreen(bool fanOn, bool ledOn);
+void drawDeviceScreen(bool ledOn);
 
 // ================= 初期設定 =================
 void setup() {
@@ -38,40 +53,37 @@ void setup() {
   M5.Lcd.setTextSize(2);
   M5.Lcd.setTextColor(WHITE);
 
-  pinMode(PHOTO_PIN, INPUT);
   Wire.begin();
-  delay(100); // I2Cバス安定化待ち
+  dht.begin();
 
-  // データ配列をゼロで初期化
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setCursor(10, 10);
+  M5.Lcd.println("Initializing sensors...");
+  delay(500);
+
+  if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(10, 10);
+    M5.Lcd.println("BH1750 Error!");
+    while (1) { M5.update(); }
+  }
+
   for (int i = 0; i < MAX_DATA_POINTS; i++) {
     tempData[i] = 0.0;
     humData[i] = 0.0;
     luxData[i] = 0.0;
   }
 
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(10, 10);
-  M5.Lcd.println("Initializing BME280...");
-  delay(500);
-
-  // BME280 初期化
-  bool status = bme.begin(0x76, &Wire);
-  if (!status) {
-    M5.Lcd.fillScreen(BLACK);
-    M5.Lcd.setCursor(10, 10);
-    M5.Lcd.println("BME280 Error!");
-    M5.Lcd.printf("Check: 0x76");
-    while (1) { M5.update(); } // エラー時は停止
-  }
-
-  drawNormalScreen(); // 初期画面表示
+  drawNormalScreen();
 }
 
 // ================= 通常画面 =================
 void drawNormalScreen() {
-  uint16_t bg = NORMAL_BG;
-  M5.Lcd.fillScreen(bg);
-  M5.Lcd.setTextColor(BLACK, bg);
+  M5.Lcd.fillScreen(NORMAL_BG);
+  M5.Lcd.setTextColor(BLACK, NORMAL_BG);
   M5.Lcd.setTextSize(3);
   M5.Lcd.setCursor(30, 30);  M5.Lcd.printf("Temp:");
   M5.Lcd.setCursor(30, 110); M5.Lcd.printf("Hum :");
@@ -80,14 +92,14 @@ void drawNormalScreen() {
 
 // ================= グラフ画面 =================
 void drawGraphScreen() {
-  uint16_t bg = BLACK;
-  M5.Lcd.fillScreen(bg);
-
+  M5.Lcd.fillScreen(BLACK);
   int baseY = 220;
   int width = 300;
   int startX = 10;
 
-  float luxScale = LUX_MAX_VALUE / (float)baseY;
+  float tempScale = baseY / (TEMP_GRAPH_MAX - TEMP_GRAPH_MIN);
+  float humScale = baseY / 100.0;
+  float luxScale = baseY / LUX_MAX_VALUE;
 
   for (int i = 1; i < MAX_DATA_POINTS; i++) {
     int idx1 = (dataIndex + i - 1) % MAX_DATA_POINTS;
@@ -95,15 +107,24 @@ void drawGraphScreen() {
     int x1 = startX + (i - 1) * (width / MAX_DATA_POINTS);
     int x2 = startX + i * (width / MAX_DATA_POINTS);
 
-    M5.Lcd.drawLine(x1, baseY - (int)tempData[idx1], x2, baseY - (int)tempData[idx2], RED);
-    M5.Lcd.drawLine(x1, baseY - (int)(humData[idx1] / 2), x2, baseY - (int)(humData[idx2] / 2), BLUE);
-    M5.Lcd.drawLine(x1, baseY - (int)(luxData[idx1] / luxScale), x2, baseY - (int)(luxData[idx2] / luxScale), YELLOW);
+    int yT1 = baseY - (int)((tempData[idx1] - TEMP_GRAPH_MIN) * tempScale);
+    int yT2 = baseY - (int)((tempData[idx2] - TEMP_GRAPH_MIN) * tempScale);
+    M5.Lcd.drawLine(x1, yT1, x2, yT2, RED);
+
+    int yH1 = baseY - (int)(humData[idx1] * humScale);
+    int yH2 = baseY - (int)(humData[idx2] * humScale);
+    M5.Lcd.drawLine(x1, yH1, x2, yH2, BLUE);
+
+    int yL1 = baseY - (int)(luxData[idx1] * luxScale);
+    int yL2 = baseY - (int)(luxData[idx2] * luxScale);
+    M5.Lcd.drawLine(x1, yL1, x2, yL2, YELLOW);
   }
 
+  // 凡例
   M5.Lcd.setTextSize(2);
-  M5.Lcd.setTextColor(RED, bg);    M5.Lcd.setCursor(10, 10);  M5.Lcd.printf("Temp");
-  M5.Lcd.setTextColor(BLUE, bg);   M5.Lcd.setCursor(110, 10); M5.Lcd.printf("Hum");
-  M5.Lcd.setTextColor(YELLOW, bg); M5.Lcd.setCursor(200, 10); M5.Lcd.printf("Lux");
+  M5.Lcd.setTextColor(RED, BLACK);     M5.Lcd.setCursor(10, 10);  M5.Lcd.printf("Temp(40C)");
+  M5.Lcd.setTextColor(BLUE, BLACK);    M5.Lcd.setCursor(120, 10); M5.Lcd.printf("Hum(100%%)");
+  M5.Lcd.setTextColor(YELLOW, BLACK);  M5.Lcd.setCursor(240, 10); M5.Lcd.printf("Lux(1k)");
 }
 
 // ================= 平均・最大・最小 =================
@@ -119,14 +140,8 @@ void drawStatsScreen() {
         validCount++;
       }
     }
-    // 実際に読み取ったデータポイント数で割る
-    if (validCount > 0) {
-        avg /= validCount;
-    } else {
-        avg = 0; 
-        maxVal = 0; 
-        minVal = 0;
-    }
+    if (validCount > 0) avg /= validCount;
+    else { avg = 0; maxVal = 0; minVal = 0; }
   };
 
   float avgT, maxT, minT;
@@ -136,120 +151,105 @@ void drawStatsScreen() {
   calcStats(humData, avgH, maxH, minH);
   calcStats(luxData, avgL, maxL, minL);
 
-  uint16_t bg = NORMAL_BG;
-  M5.Lcd.fillScreen(bg);
+  M5.Lcd.fillScreen(NORMAL_BG);
   M5.Lcd.setTextSize(3);
-  M5.Lcd.setTextColor(BLACK, bg);
-
+  M5.Lcd.setTextColor(BLACK, NORMAL_BG);
   M5.Lcd.setCursor(80, 10); M5.Lcd.printf("AVG");
   M5.Lcd.setCursor(180, 10); M5.Lcd.printf("MAX");
   M5.Lcd.setCursor(260, 10); M5.Lcd.printf("MIN");
   M5.Lcd.drawFastHLine(5, 45, 310, GRAY);
 
   int y_offset = 60;
-
-  uint16_t tempColorAvg = (avgT >= 30) ? RED : (avgT <= 20) ? CYAN : GREEN;
-  uint16_t tempColorMax = (maxT >= 30) ? RED : (maxT <= 20) ? CYAN : GREEN;
-  uint16_t tempColorMin = (minT >= 30) ? RED : (minT <= 20) ? CYAN : GREEN;
-
-  M5.Lcd.setCursor(10, y_offset); M5.Lcd.printf("T:");
-  M5.Lcd.setTextColor(tempColorAvg, bg); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%.1f", avgT);
-  M5.Lcd.setTextColor(tempColorMax, bg); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%.1f", maxT);
-  M5.Lcd.setTextColor(tempColorMin, bg); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%.1f", minT);
+  M5.Lcd.setCursor(10, y_offset); 
+  M5.Lcd.printf("T:");
+  M5.Lcd.setTextColor((avgT>=30)?RED:(avgT<=20)?CYAN:GREEN, NORMAL_BG); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%.1f C", avgT);
+  M5.Lcd.setTextColor((maxT>=30)?RED:(maxT<=20)?CYAN:GREEN, NORMAL_BG); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%.1f C", maxT);
+  M5.Lcd.setTextColor((minT>=30)?RED:(minT<=20)?CYAN:GREEN, NORMAL_BG); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%.1f C", minT);
 
   y_offset += 60;
-
-  uint16_t humColorAvg = (avgH >= 80) ? PURPLE : (avgH <= 60) ? BLUE : GREEN;
-  uint16_t humColorMax = (maxH >= 80) ? PURPLE : (maxH <= 60) ? BLUE : GREEN;
-  uint16_t humColorMin = (minH >= 80) ? PURPLE : (minH <= 60) ? BLUE : GREEN;
-
-  M5.Lcd.setTextColor(BLACK, bg);
-  M5.Lcd.setCursor(10, y_offset); M5.Lcd.printf("H:");
-  M5.Lcd.setTextColor(humColorAvg, bg); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%.1f", avgH);
-  M5.Lcd.setTextColor(humColorMax, bg); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%.1f", maxH);
-  M5.Lcd.setTextColor(humColorMin, bg); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%.1f", minH);
+  M5.Lcd.setCursor(10, y_offset);
+  M5.Lcd.printf("H:");
+  M5.Lcd.setTextColor((avgH>=80)?PURPLE:(avgH<=60)?BLUE:GREEN, NORMAL_BG); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%.1f %%", avgH);
+  M5.Lcd.setTextColor((maxH>=80)?PURPLE:(maxH<=60)?BLUE:GREEN, NORMAL_BG); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%.1f %%", maxH);
+  M5.Lcd.setTextColor((minH>=80)?PURPLE:(minH<=60)?BLUE:GREEN, NORMAL_BG); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%.1f %%", minH);
 
   y_offset += 60;
-
-  uint16_t luxColorAvg = (avgL >= 800) ? WHITE : (avgL <= 100) ? GRAY : YELLOW;
-  uint16_t luxColorMax = (maxL >= 800) ? WHITE : (maxL <= 100) ? GRAY : YELLOW;
-  uint16_t luxColorMin = (minL >= 800) ? WHITE : (minL <= 100) ? GRAY : YELLOW;
-
-  M5.Lcd.setTextColor(BLACK, bg);
-  M5.Lcd.setCursor(10, y_offset); M5.Lcd.printf("L:");
-  M5.Lcd.setTextColor(luxColorAvg, bg); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%d", (int)avgL);
-  M5.Lcd.setTextColor(luxColorMax, bg); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%d", (int)maxL);
-  M5.Lcd.setTextColor(luxColorMin, bg); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%d", (int)minL);
+  M5.Lcd.setCursor(10, y_offset);
+  M5.Lcd.printf("L:");
+  M5.Lcd.setTextColor((avgL>=800)?WHITE:(avgL<=100)?GRAY:YELLOW, NORMAL_BG); M5.Lcd.setCursor(70, y_offset); M5.Lcd.printf("%d Lx", (int)avgL);
+  M5.Lcd.setTextColor((maxL>=800)?WHITE:(maxL<=100)?GRAY:YELLOW, NORMAL_BG); M5.Lcd.setCursor(160, y_offset); M5.Lcd.printf("%d Lx", (int)maxL);
+  M5.Lcd.setTextColor((minL>=800)?WHITE:(minL<=100)?GRAY:YELLOW, NORMAL_BG); M5.Lcd.setCursor(240, y_offset); M5.Lcd.printf("%d Lx", (int)minL);
 }
 
-// ================= Fan / LED画面 =================
-void drawDeviceScreen(bool fanOn, bool ledOn) {
-  uint16_t bg = NORMAL_BG;
-  M5.Lcd.fillScreen(bg);
+// ================= LED状態画面 =================
+void drawDeviceScreen(bool ledOn) {
+  M5.Lcd.fillScreen(NORMAL_BG);
   M5.Lcd.setTextSize(4);
-
-  uint16_t fanColor = fanOn ? ORANGE : BLACK;
-  uint16_t ledColor = ledOn ? RED : BLACK;
-
-  M5.Lcd.setCursor(40, 70);  M5.Lcd.setTextColor(BLACK, bg); M5.Lcd.printf("Fan : ");
-  M5.Lcd.setTextColor(fanColor, bg); M5.Lcd.printf("%s", fanOn ? "ON" : "OFF");
-
-  M5.Lcd.setCursor(40, 150); M5.Lcd.setTextColor(BLACK, bg); M5.Lcd.printf("LED : ");
-  M5.Lcd.setTextColor(ledColor, bg); M5.Lcd.printf("%s", ledOn ? "ON" : "OFF");
+  M5.Lcd.setCursor(40, 100);
+  M5.Lcd.setTextColor(ledOn ? ORANGE : BLACK, NORMAL_BG);
+  M5.Lcd.printf("LED : %s", ledOn ? "ON" : "OFF");
 }
 
 // ================= メインループ =================
 void loop() {
   M5.update();
 
-  // ---- 実センサー値取得 ----
-  int lightRaw = analogRead(PHOTO_PIN);
-  float lux = (lightRaw / 4095.0) * LUX_MAX_VALUE;
-
-  float temp = bme.readTemperature();
-  float hum  = bme.readHumidity();
-
-  bool fanOn = temp > 25.0;
-  bool ledOn = lux < 200.0;
-
-  if (!isnan(temp) && !isnan(hum)) {
-      tempData[dataIndex] = temp;
-      humData[dataIndex]  = hum;
-      luxData[dataIndex]  = lux;
-      dataIndex = (dataIndex + 1) % MAX_DATA_POINTS;
-  }
-
-  // ---- ボタン操作 ----
+  // ====== ボタン処理 ======
   if (M5.BtnA.wasPressed()) {
     screenMode = (screenMode == 1) ? 0 : 1;
     if (screenMode == 0) drawNormalScreen();
     else drawGraphScreen();
   }
   if (M5.BtnB.wasPressed()) { screenMode = 2; drawStatsScreen(); }
-  if (M5.BtnC.wasPressed()) { screenMode = 3; drawDeviceScreen(fanOn, ledOn); }
+  if (M5.BtnC.wasPressed()) { screenMode = 3; drawDeviceScreen(digitalRead(ledPin)); }
 
-  // ---- 通常画面更新 ----
-  if (screenMode == 0) {
-    uint16_t bg = NORMAL_BG;
-    M5.Lcd.setTextSize(5);
+  // ====== 1秒ごとのセンサー更新 ======
+  if (millis() - lastUpdate >= UPDATE_INTERVAL) {
+    lastUpdate = millis();
 
-    uint16_t tempColor = (temp >= 30) ? RED : (temp <= 20) ? CYAN : GREEN;
-    M5.Lcd.setTextColor(tempColor, bg);
-    M5.Lcd.fillRect(140, 20, 160, 60, bg);
-    M5.Lcd.setCursor(140, 20); M5.Lcd.printf("%.1f C", temp);
+    float temp = dht.readTemperature();
+    float hum = dht.readHumidity();
+    if (isnan(temp) || isnan(hum)) {
+      M5.Lcd.fillScreen(RED); 
+      M5.Lcd.setTextSize(3);
+      M5.Lcd.setTextColor(WHITE, RED);
+      M5.Lcd.setCursor(10, 100); M5.Lcd.println("DHT Read Error!");
+      digitalWrite(ledPin, LOW);
+      return;
+    }
 
-    uint16_t humColor = (hum >= 80) ? PURPLE : (hum <= 60) ? BLUE : GREEN;
-    M5.Lcd.setTextColor(humColor, bg);
-    M5.Lcd.fillRect(140, 100, 160, 60, bg);
-    M5.Lcd.setCursor(140, 100); M5.Lcd.printf("%.1f %%", hum);
+    float lux = lightMeter.readLightLevel();
+    if (lux < 0) lux = 0;
 
-    uint16_t luxColor = (lux >= 800) ? WHITE : (lux <= 100) ? GRAY : YELLOW;
-    M5.Lcd.setTextColor(luxColor, bg);
-    M5.Lcd.fillRect(140, 180, 160, 60, bg);
-    M5.Lcd.setCursor(140, 180); M5.Lcd.printf("%d Lx", (int)lux);
+    bool ledOn = lux < LIGHT_THRESHOLD;
+    digitalWrite(ledPin, ledOn ? HIGH : LOW);
+
+    tempData[dataIndex] = temp;
+    humData[dataIndex] = hum;
+    luxData[dataIndex] = lux;
+    dataIndex = (dataIndex + 1) % MAX_DATA_POINTS;
+
+    // 通常画面更新
+    if (screenMode == 0) {
+      M5.Lcd.setTextSize(5);
+
+      uint16_t tempColor = (temp >= 30) ? RED : (temp <= 20) ? CYAN : GREEN;
+      M5.Lcd.setTextColor(tempColor, NORMAL_BG);
+      M5.Lcd.fillRect(140, 20, 160, 60, NORMAL_BG);
+      M5.Lcd.setCursor(140, 20); M5.Lcd.printf("%.1f C", temp);
+
+      uint16_t humColor = (hum >= 80) ? PURPLE : (hum <= 60) ? BLUE : GREEN;
+      M5.Lcd.setTextColor(humColor, NORMAL_BG);
+      M5.Lcd.fillRect(140, 100, 160, 60, NORMAL_BG);
+      M5.Lcd.setCursor(140, 100); M5.Lcd.printf("%.1f %%", hum);
+
+      uint16_t luxColor = (lux >= 800) ? WHITE : (lux <= 100) ? GRAY : YELLOW;
+      M5.Lcd.setTextColor(luxColor, NORMAL_BG);
+      M5.Lcd.fillRect(140, 180, 160, 60, NORMAL_BG);
+      M5.Lcd.setCursor(140, 180); M5.Lcd.printf("%d Lx", (int)lux);
+    }
+
+    // グラフ画面のみ毎秒更新
+    if (screenMode == 1) drawGraphScreen();
   }
-
-  if (screenMode == 1) drawGraphScreen();
-
-  delay(1000);
 }
