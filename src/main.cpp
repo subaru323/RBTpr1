@@ -3,12 +3,12 @@
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <BH1750.h>
+#include <math.h>
 
 // ====== センサー設定 ======
 #define DHTPIN 16
 #define DHTTYPE DHT22
 DHT dht(DHTPIN, DHTTYPE);
-
 BH1750 lightMeter;
 
 // ====== 出力ピン ======
@@ -51,7 +51,7 @@ const unsigned long RESET_INTERVAL = 24UL * 60UL * 60UL * 1000UL; // 24時間
 
 // ====== 顔アニメーション用 ======
 unsigned long lastIdleUpdate = 0;
-const unsigned long IDLE_FRAME_INTERVAL = 500; // アニメーション更新間隔
+const unsigned long IDLE_FRAME_INTERVAL = 200; // アニメーション更新間隔
 bool eyesOpen = true;
 bool mouthSmile = true;
 unsigned long lastInteraction = 0;
@@ -214,8 +214,8 @@ void drawDeviceScreen(bool ledOn){
 void drawIdleFaceAnimated() {
     M5.Lcd.fillScreen(NORMAL_BG);
 
-    int centerX = 160; // 画面中央X
-    int centerY = 120; // 画面中央Y
+    int centerX = 160;
+    int centerY = 120;
     int eyeOffsetX = 50;
     int eyeOffsetY = 30;
     int eyeRadius = 20;
@@ -228,19 +228,24 @@ void drawIdleFaceAnimated() {
         M5.Lcd.fillCircle(centerX - eyeOffsetX, centerY - eyeOffsetY, pupilRadius, BLACK);
         M5.Lcd.fillCircle(centerX + eyeOffsetX, centerY - eyeOffsetY, pupilRadius, BLACK);
     } else {
+        // 自然な目パチ（半円ライン）
         M5.Lcd.drawLine(centerX - eyeOffsetX - eyeRadius, centerY - eyeOffsetY, centerX - eyeOffsetX + eyeRadius, centerY - eyeOffsetY, BLACK);
         M5.Lcd.drawLine(centerX + eyeOffsetX - eyeRadius, centerY - eyeOffsetY, centerX + eyeOffsetX + eyeRadius, centerY - eyeOffsetY, BLACK);
     }
 
-    // まゆげ
+    // 眉毛
     M5.Lcd.drawLine(centerX - eyeOffsetX - 15, centerY - eyeOffsetY - 20, centerX - eyeOffsetX + 15, centerY - eyeOffsetY - 20, BLACK);
     M5.Lcd.drawLine(centerX + eyeOffsetX - 15, centerY - eyeOffsetY - 20, centerX + eyeOffsetX + 15, centerY - eyeOffsetY - 20, BLACK);
 
-    // 口
+    // 口（曲線）
     int mouthWidth = 80;
-    int mouthHeight = mouthSmile ? 30 : 15;
+    int mouthHeight = mouthSmile ? 20 : 10;
     for(int i=0;i<=mouthHeight;i++){
-        M5.Lcd.drawLine(centerX - mouthWidth/2, centerY + 40 + i, centerX + mouthWidth/2, centerY + 40 + i, RED);
+        int y = centerY + 40 + i;
+        float k = (float)i/mouthHeight;
+        int startX = centerX - mouthWidth/2 + (int)(mouthWidth * 0.1 * sin(k*M_PI));
+        int endX = centerX + mouthWidth/2 - (int)(mouthWidth * 0.1 * sin(k*M_PI));
+        M5.Lcd.drawLine(startX, y, endX, y, RED);
     }
 }
 
