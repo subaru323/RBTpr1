@@ -39,12 +39,15 @@ int screenMode = 0; // 0:通常 1:グラフ 2:統計 3:LED状態
 // ====== タイマー ======
 unsigned long lastUpdate = 0;
 const unsigned long UPDATE_INTERVAL = 1000; // 1秒
+unsigned long lastResetTime = 0;             // 24時間リセット用
+const unsigned long RESET_INTERVAL = 24UL * 60UL * 60UL * 1000UL; // 24時間
 
 // ====== 関数プロトタイプ ======
 void drawNormalScreen();
 void drawGraphScreen();
 void drawStatsScreen();
 void drawDeviceScreen(bool ledOn);
+void resetStats();  // ← 追加（24時間ごとに配列を初期化）
 
 // ================= 初期設定 =================
 void setup() {
@@ -68,7 +71,7 @@ void setup() {
     M5.Lcd.fillScreen(BLACK);
     M5.Lcd.setCursor(10, 10);
     M5.Lcd.println("BH1750 Error!");
-    while (1) { M5.update(); }
+    while(1){ M5.update(); }
   }
 
   for (int i = 0; i < MAX_DATA_POINTS; i++) {
@@ -78,8 +81,18 @@ void setup() {
   }
 
   drawNormalScreen();
+  // 配列初期化
+  resetStats();
+  lastResetTime = millis(); // ← 起動時刻記録
 }
 
+// ================= データリセット（24時間ごと） =================
+void resetStats() {
+  for (int i = 0; i < MAX_DATA_POINTS; i++) {
+    tempData[i] = humData[i] = luxData[i] = 0.0;
+  }
+  dataIndex = 0;
+}
 // ================= 通常画面 =================
 void drawNormalScreen() {
   M5.Lcd.fillScreen(NORMAL_BG);
@@ -204,9 +217,9 @@ void loop() {
   if (M5.BtnC.wasPressed()) { screenMode = 3; drawDeviceScreen(digitalRead(ledPin)); }
 
   // ====== 1秒ごとのセンサー更新 ======
-  if (millis() - lastUpdate >= UPDATE_INTERVAL) {
+  if ((unsigned long)(millis() - lastUpdate) >= UPDATE_INTERVAL) {
     lastUpdate = millis();
-
+  
     float temp = dht.readTemperature();
     float hum = dht.readHumidity();
     if (isnan(temp) || isnan(hum)) {
@@ -251,5 +264,15 @@ void loop() {
 
     // グラフ画面のみ毎秒更新
     if (screenMode == 1) drawGraphScreen();
+  }
+  // ====== 24時間経過で統計リセット ======
+  if ((unsigned long)(millis() - lastResetTime) >= RESET_INTERVAL) {
+    resetStats();
+    lastResetTime = millis();
+
+    // 現在のモードを再描画
+    if (screenMode == 0) drawNormalScreen();
+    if (screenMode == 1) drawGraphScreen();
+    if (screenMode == 2) drawStatsScreen();
   }
 }
