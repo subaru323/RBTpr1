@@ -49,6 +49,8 @@ void drawStatsScreen();
 void drawDeviceScreen(bool ledOn);
 void resetStats();  // ← 追加（24時間ごとに配列を初期化）
 
+bool bh1750Initialized = false;
+
 // ================= 初期設定 =================
 void setup() {
   auto cfg = M5.config();
@@ -67,11 +69,12 @@ void setup() {
   M5.Lcd.println("Initializing sensors...");
   delay(500);
 
-  if (!lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE)) {
-    M5.Lcd.fillScreen(BLACK);
+  // BH1750 初期化（失敗してもループで再試行）
+  bh1750Initialized = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
+  if (!bh1750Initialized) {
+    M5.Lcd.fillScreen(RED);
     M5.Lcd.setCursor(10, 10);
-    M5.Lcd.println("BH1750 Error!");
-    while(1){ M5.update(); }
+    M5.Lcd.println("BH1750 Init Failed!");
   }
 
   for (int i = 0; i < MAX_DATA_POINTS; i++) {
@@ -81,7 +84,6 @@ void setup() {
   }
 
   drawNormalScreen();
-  // 配列初期化
   resetStats();
   lastResetTime = millis(); // ← 起動時刻記録
 }
@@ -93,6 +95,7 @@ void resetStats() {
   }
   dataIndex = 0;
 }
+
 // ================= 通常画面 =================
 void drawNormalScreen() {
   M5.Lcd.fillScreen(NORMAL_BG);
@@ -133,7 +136,6 @@ void drawGraphScreen() {
     M5.Lcd.drawLine(x1, yL1, x2, yL2, YELLOW);
   }
 
-  // 凡例
   M5.Lcd.setTextSize(2);
   M5.Lcd.setTextColor(RED, BLACK);     M5.Lcd.setCursor(10, 10);  M5.Lcd.printf("Temp(40C)");
   M5.Lcd.setTextColor(BLUE, BLACK);    M5.Lcd.setCursor(120, 10); M5.Lcd.printf("Hum(100%%)");
@@ -203,6 +205,10 @@ void drawDeviceScreen(bool ledOn) {
   M5.Lcd.printf("LED : %s", ledOn ? "ON" : "OFF");
 }
 
+// ====== タイマー追加 ======
+unsigned long lastBH1750Retry = 0;        // BH1750再試行タイマー
+const unsigned long BH1750_RETRY_INTERVAL = 5000; // 5秒
+
 // ================= メインループ =================
 void loop() {
   M5.update();
@@ -216,6 +222,22 @@ void loop() {
   if (M5.BtnB.wasPressed()) { screenMode = 2; drawStatsScreen(); }
   if (M5.BtnC.wasPressed()) { screenMode = 3; drawDeviceScreen(digitalRead(ledPin)); }
 
+  // ====== BH1750 初期化再試行 ======
+  if (!bh1750Initialized) {
+    if ((unsigned long)(millis() - lastBH1750Retry) >= BH1750_RETRY_INTERVAL) {
+        lastBH1750Retry = millis();
+        bh1750Initialized = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
+        if (!bh1750Initialized) {
+            M5.Lcd.setCursor(10, 50);
+            M5.Lcd.println("Retrying BH1750...");
+        } else {
+            M5.Lcd.fillScreen(NORMAL_BG);
+            drawNormalScreen();
+        }
+    }
+    return;
+}
+
   // ====== 1秒ごとのセンサー更新 ======
   if ((unsigned long)(millis() - lastUpdate) >= UPDATE_INTERVAL) {
     lastUpdate = millis();
@@ -228,7 +250,7 @@ void loop() {
       M5.Lcd.setTextColor(WHITE, RED);
       M5.Lcd.setCursor(10, 100); M5.Lcd.println("DHT Read Error!");
       digitalWrite(ledPin, LOW);
-      return;
+      return; // 次回ループで再試行
     }
 
     float lux = lightMeter.readLightLevel();
@@ -265,6 +287,7 @@ void loop() {
     // グラフ画面のみ毎秒更新
     if (screenMode == 1) drawGraphScreen();
   }
+
   // ====== 24時間経過で統計リセット ======
   if ((unsigned long)(millis() - lastResetTime) >= RESET_INTERVAL) {
     resetStats();
