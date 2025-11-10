@@ -6,9 +6,9 @@
 // ====== センサー設定 ======
 #define BME_SDA 22
 #define BME_SCL 21
-Adafruit_BME280 bme;  // BME280
+Adafruit_BME280 bme;  // BME280 (I2C)
 
-#define LIGHT_PIN 36  // NJL750L アナログ入力
+#define LIGHT_PIN 36       // NJL750L アナログ入力
 constexpr int LIGHT_THRESHOLD = 100;
 
 // ====== 出力ピン ======
@@ -74,7 +74,7 @@ bool initBME280();
 bool initBME280() {
     byte possibleAddresses[] = {0x75, 0x76, 0x77};
     for(byte i=0; i<3; i++){
-        if(bme.begin(possibleAddresses[i])){
+        if(bme.begin(possibleAddresses[i], &Wire)){  // ← カスタムI2Cバスを指定
             M5.Lcd.printf("BME280 found at 0x%02X\n", possibleAddresses[i]);
             return true;
         }
@@ -92,7 +92,7 @@ void setup() {
     pinMode(ledPin, OUTPUT);
     pinMode(LIGHT_PIN, INPUT);
 
-    Wire.begin(BME_SDA, BME_SCL);
+    Wire.begin(BME_SDA, BME_SCL);  // GPIO22=SDA, GPIO21=SCL
     Wire.setClock(100000); // 100kHz
 
     M5.Lcd.fillScreen(NORMAL_BG);
@@ -220,12 +220,42 @@ void drawDeviceScreen(bool ledOn) {
 
 // ================= アイドル顔描画 =================
 void drawIdleFaceAnimated() {
-    // 必要に応じてアイドル顔描画
+    int cx = 160, cy = 120;
+    int eyeW = 20, eyeH = 15;
+    int mouthW = 60, mouthH = 20;
+
+    // 画面リセット
+    M5.Lcd.fillRect(0,0,320,240,NORMAL_BG);
+
+    // 目
+    M5.Lcd.fillEllipse(cx-40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
+    M5.Lcd.fillEllipse(cx+40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
+
+    // 口（アニメ）
+    float mouthT = sin(mouthAnimT)*5.0;
+    M5.Lcd.fillRect(cx-mouthW/2, cy+30+mouthT, mouthW, mouthH, RED);
+
+    mouthAnimT += 0.2;
+    if(mouthAnimT>6.28) mouthAnimT = 0;
 }
 
 // ================= アイドル制御 =================
 void checkIdleFace() {
-    // 必要に応じてアイドル顔制御
+    unsigned long now = millis();
+    if(now - lastInteraction > IDLE_TIMEOUT){
+        if(now - lastIdleUpdate > 100){
+            lastIdleUpdate = now;
+            // 点滅
+            if(now - lastBlinkTime > blinkInterval){
+                eyesOpen = false;
+                lastBlinkTime = now;
+            }
+            if(!eyesOpen && now - lastBlinkTime > BLINK_DURATION){
+                eyesOpen = true;
+            }
+            drawIdleFaceAnimated();
+        }
+    }
 }
 
 // ================= メインループ =================
