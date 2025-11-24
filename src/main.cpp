@@ -4,8 +4,6 @@
 #include <math.h>
 
 // ====== センサー設定 ======
-#define BME_SDA 22
-#define BME_SCL 21
 Adafruit_BME280 bme;  // BME280 (I2C)
 
 #define LIGHT_PIN 36       // NJL750L アナログ入力
@@ -68,20 +66,6 @@ void drawDeviceScreen(bool ledOn);
 void resetStats();
 void drawIdleFaceAnimated();
 void checkIdleFace();
-bool initBME280();
-
-// ================= BME280 初期化 =================
-bool initBME280() {
-    byte possibleAddresses[] = {0x75, 0x76, 0x77};
-    for(byte i=0; i<3; i++){
-        if(bme.begin(possibleAddresses[i], &Wire)){  // ← カスタムI2Cバスを指定
-            M5.Lcd.printf("BME280 found at 0x%02X\n", possibleAddresses[i]);
-            return true;
-        }
-    }
-    M5.Lcd.println("BME280 NOT FOUND!");
-    return false;
-}
 
 // ================= 初期設定 =================
 void setup() {
@@ -92,13 +76,22 @@ void setup() {
     pinMode(ledPin, OUTPUT);
     pinMode(LIGHT_PIN, INPUT);
 
-    Wire.begin(BME_SDA, BME_SCL);  // GPIO22=SDA, GPIO21=SCL
-    Wire.setClock(100000); // 100kHz
+    Wire.begin();  // デフォルト設定を使用
+    Wire.setClock(100000);
+    delay(100);
 
     M5.Lcd.fillScreen(NORMAL_BG);
     M5.Lcd.setCursor(10,10);
-    if(!initBME280()){
-        M5.Lcd.println("BME280 Init Failed!");
+    M5.Lcd.println("Init...");
+    
+    bool status = bme.begin(0x76, &Wire);
+    
+    if (!status) {
+        M5.Lcd.println("BME280 Error!");
+        delay(5000);
+    } else {
+        M5.Lcd.println("BME280 OK!");
+        delay(2000);
     }
 
     resetStats();
@@ -224,14 +217,11 @@ void drawIdleFaceAnimated() {
     int eyeW = 20, eyeH = 15;
     int mouthW = 60, mouthH = 20;
 
-    // 画面リセット
     M5.Lcd.fillRect(0,0,320,240,NORMAL_BG);
 
-    // 目
     M5.Lcd.fillEllipse(cx-40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
     M5.Lcd.fillEllipse(cx+40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
 
-    // 口（アニメ）
     float mouthT = sin(mouthAnimT)*5.0;
     M5.Lcd.fillRect(cx-mouthW/2, cy+30+mouthT, mouthW, mouthH, RED);
 
@@ -245,7 +235,6 @@ void checkIdleFace() {
     if(now - lastInteraction > IDLE_TIMEOUT){
         if(now - lastIdleUpdate > 100){
             lastIdleUpdate = now;
-            // 点滅
             if(now - lastBlinkTime > blinkInterval){
                 eyesOpen = false;
                 lastBlinkTime = now;
@@ -263,7 +252,6 @@ void loop() {
     M5.update();
     unsigned long now = millis();
 
-    // ボタン操作
     if(M5.BtnA.wasPressed()){
         lastInteraction = now;
         screenMode = (screenMode==1)?0:1;
@@ -281,7 +269,6 @@ void loop() {
         drawDeviceScreen(digitalRead(ledPin));
     }
 
-    // 1秒ごとデータ更新
     if(now - lastUpdate >= UPDATE_INTERVAL){
         lastUpdate = now;
 
@@ -329,7 +316,6 @@ void loop() {
         }
     }
 
-    // 24時間ごとのリセット
     if(now - lastResetTime >= RESET_INTERVAL){
         resetStats();
         lastResetTime = now;
