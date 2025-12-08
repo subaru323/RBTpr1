@@ -1,8 +1,9 @@
 // ==========================================
-// 統合版フルコード（M5Stack Basic/Gray）
+// 統合版フルコード（M5Stack Basic/Gray）日本語版
 // - BME280センサー + 照度センサー + LED自動制御
 // - OpenWeatherMap API + 6都市切替
 // - 高速化・差分描画対応
+// - 日本語表示対応（efont使用）
 // ==========================================
 
 #include <M5Unified.h>
@@ -24,18 +25,19 @@ const char* NTP_SERVER = "ntp.nict.jp";
 const long GMT_OFFSET_SEC = 9*3600;
 const int DAYLIGHT_OFFSET_SEC = 0;
 
-// 都市リスト
+// 都市リスト（日本語名）
 struct CityInfo {
-    String name;
+    String nameJP;
+    String nameEN;
     String id;
 };
 CityInfo cities[] = {
-    {"Osaka",   "1853909"},
-    {"Tokyo",   "1850147"},
-    {"Nagoya",  "1856057"},
-    {"Sapporo", "2128295"},
-    {"Fukuoka", "1863967"},
-    {"Naha",    "1894616"}
+    {"大阪", "Osaka",   "1853909"},
+    {"東京", "Tokyo",   "1850147"},
+    {"名古屋", "Nagoya",  "1856057"},
+    {"札幌", "Sapporo", "2128295"},
+    {"福岡", "Fukuoka", "1863967"},
+    {"那覇", "Naha",    "1894616"}
 };
 const int NUM_CITIES = sizeof(cities)/sizeof(cities[0]);
 int cityIndex = 0;
@@ -62,7 +64,7 @@ Adafruit_BME280 bme;
 
 #define LIGHT_PIN 36
 constexpr int LIGHT_THRESHOLD = 100;
-constexpr int ledPin = 25;  // LED出力ピン
+constexpr int ledPin = 25;
 
 // データ保管
 constexpr int MAX_DATA_POINTS = 60;
@@ -89,13 +91,13 @@ int dataIndex = 0;
 // ==========================================
 // 画面モード / タイマー
 // ==========================================
-int screenMode = 0; // 0 normal, 1 graph, 2 stats, 3 weather
+int screenMode = 0; // 0 通常, 1 グラフ, 2 統計, 3 天気
 const int NUM_SCREENS = 4;
 
 unsigned long lastUpdate = 0;
 constexpr unsigned long UPDATE_INTERVAL = 1000;
 unsigned long lastWeatherUpdate = 0;
-constexpr unsigned long UPDATE_WEATHER_INTERVAL = 1800000; // 30分
+constexpr unsigned long UPDATE_WEATHER_INTERVAL = 1800000;
 unsigned long lastInteraction = 0;
 
 // アイドル顔
@@ -132,6 +134,7 @@ bool initBME280();
 void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weatherSymbol);
 String getWeatherSymbol(String description);
 String getWeatherIcon(String symbol);
+String getWeatherDescJP(String description);
 void requestWeatherFetchNow(int cityIdx);
 void scheduleWeatherFetchForCity(int cityIdx);
 void connectWiFi();
@@ -172,12 +175,12 @@ bool initBME280(){
             return true;
         }
     }
-    showTempMessage("BME not found", 900);
+    showTempMessage("BME接続失敗", 900);
     return false;
 }
 
 // ==========================================
-// 天気アイコン / シンボル
+// 天気アイコン / シンボル / 日本語変換
 // ==========================================
 String getWeatherSymbol(String description){
     String d = description; d.toLowerCase();
@@ -196,13 +199,23 @@ String getWeatherIcon(String symbol){
     if(symbol=="THTR") return "⚡";
     return "❓";
 }
+String getWeatherDescJP(String description){
+    String d = description; d.toLowerCase();
+    if(d.indexOf("clear") != -1) return "晴れ";
+    if(d.indexOf("cloud") != -1) return "曇り";
+    if(d.indexOf("rain") != -1) return "雨";
+    if(d.indexOf("drizzle") != -1) return "霧雨";
+    if(d.indexOf("snow") != -1) return "雪";
+    if(d.indexOf("thun") != -1 || d.indexOf("tstorm") != -1) return "雷雨";
+    return "不明";
+}
 
 // ==========================================
 // URL作成
 // ==========================================
 void updateWeatherUrlForCity(int idx, String &outUrl){
     outUrl = "http://api.openweathermap.org/data/2.5/weather?id=" + cities[idx].id +
-             "&units=metric&lang=en&appid=" + String(API_KEY);
+             "&units=metric&lang=ja&appid=" + String(API_KEY);
 }
 
 // ==========================================
@@ -216,9 +229,9 @@ void scheduleWeatherFetchForCity(int cityIdx){
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
         M5.Lcd.setTextSize(4);
         M5.Lcd.setCursor(20, 20);
-        M5.Lcd.printf("[%s]", cities[cityIdx].name.c_str());
+        M5.Lcd.printf("[%s]", cities[cityIdx].nameJP.c_str());
         M5.Lcd.setCursor(20, 110);
-        M5.Lcd.printf("Fetching...");
+        M5.Lcd.printf("取得中...");
     }
     requestWeatherFetchNow(cityIdx);
 }
@@ -232,7 +245,7 @@ void requestWeatherFetchNow(int cityIdx){
     if(WiFi.status() != WL_CONNECTED){
         connectWiFi();
         if(WiFi.status() != WL_CONNECTED){
-            showTempMessage("No WiFi", 900);
+            showTempMessage("WiFi未接続", 900);
             return;
         }
     }
@@ -246,7 +259,7 @@ void requestWeatherFetchNow(int cityIdx){
         if(!deserializeJson(doc, payload)){
             WeatherCache c;
             c.valid = true;
-            c.cityName = doc["name"].as<String>();
+            c.cityName = cities[cityIdx].nameJP;
             const char* desc = doc["weather"][0]["description"] | "NoDesc";
             c.description = String(desc);
             c.symbol = getWeatherSymbol(c.description);
@@ -254,8 +267,8 @@ void requestWeatherFetchNow(int cityIdx){
             c.lastFetch = millis();
             weatherCache[cityIdx] = c;
             drawWeatherScreenOptimized(cityIdx, false);
-        } else showTempMessage("JSON err", 800);
-    } else showTempMessage("HTTP err", 800);
+        } else showTempMessage("JSONエラー", 800);
+    } else showTempMessage("HTTPエラー", 800);
     http.end();
 }
 
@@ -263,13 +276,13 @@ void requestWeatherFetchNow(int cityIdx){
 // WiFi接続
 // ==========================================
 void connectWiFi(){
-    showTempMessage("WiFi...");
+    showTempMessage("WiFi接続中");
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     unsigned long start = millis();
     while(WiFi.status() != WL_CONNECTED && millis()-start < 8000) delay(150);
-    if(WiFi.status() == WL_CONNECTED) showTempMessage("WiFi OK", 700);
-    else showTempMessage("WiFi Fail", 800);
+    if(WiFi.status() == WL_CONNECTED) showTempMessage("WiFi接続完了", 700);
+    else showTempMessage("WiFi接続失敗", 800);
 }
 
 // ==========================================
@@ -290,7 +303,7 @@ void drawWeatherFullFromCache(int cityIdx){
 
     M5.Lcd.setTextSize(3);
     M5.Lcd.setCursor(80, 85);
-    M5.Lcd.printf("%s", c.description.c_str());
+    M5.Lcd.printf("%s", getWeatherDescJP(c.description).c_str());
 
     M5.Lcd.setTextSize(6);
     M5.Lcd.setCursor(70, 140);
@@ -309,7 +322,7 @@ void drawWeatherScreenOptimized(int cityIdx, bool force){
         M5.Lcd.setTextSize(3);
         M5.Lcd.setCursor(20, 110);
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
-        M5.Lcd.printf("No cached data");
+        M5.Lcd.printf("データなし");
         lastDisplayedCityIndex = -1;
         return;
     }
@@ -332,7 +345,7 @@ void drawWeatherScreenOptimized(int cityIdx, bool force){
         M5.Lcd.setTextSize(3);
         M5.Lcd.setCursor(130,85);
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
-        M5.Lcd.printf("%s", c.description.c_str());
+        M5.Lcd.printf("%s", getWeatherDescJP(c.description).c_str());
         lastDisplayedDescription = c.description;
     }
 
@@ -353,9 +366,9 @@ void drawNormalScreen(){
     M5.Lcd.fillScreen(NORMAL_BG);
     M5.Lcd.setTextColor(BLACK, NORMAL_BG);
     M5.Lcd.setTextSize(3);
-    M5.Lcd.setCursor(30, 30);  M5.Lcd.printf("Temp:");
-    M5.Lcd.setCursor(30,110);  M5.Lcd.printf("Hum :");
-    M5.Lcd.setCursor(30,190);  M5.Lcd.printf("Lux :");
+    M5.Lcd.setCursor(30, 30);  M5.Lcd.printf("温度:");
+    M5.Lcd.setCursor(30,110);  M5.Lcd.printf("湿度:");
+    M5.Lcd.setCursor(30,190);  M5.Lcd.printf("照度:");
 }
 
 void drawGraphScreen(){
@@ -409,9 +422,9 @@ void drawStatsScreen(){
 
     M5.Lcd.setTextSize(3);
     M5.Lcd.setTextColor(BLACK,NORMAL_BG);
-    M5.Lcd.setCursor(80,10); M5.Lcd.printf("AVG");
-    M5.Lcd.setCursor(180,10); M5.Lcd.printf("MAX");
-    M5.Lcd.setCursor(260,10); M5.Lcd.printf("MIN");
+    M5.Lcd.setCursor(80,10); M5.Lcd.printf("平均");
+    M5.Lcd.setCursor(180,10); M5.Lcd.printf("最大");
+    M5.Lcd.setCursor(260,10); M5.Lcd.printf("最小");
     M5.Lcd.drawFastHLine(5,45,310,BLACK);
 
     int y=60;
@@ -513,10 +526,13 @@ void resetStats(){
 void setup(){
     auto cfg = M5.config();
     M5.begin(cfg);
-    M5.Lcd.setTextSize(2);
-    M5.Lcd.setTextColor(WHITE);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(WHITE);
     
-    pinMode(ledPin, OUTPUT);  // LED出力設定
+    // 日本語フォント設定
+    M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+    
+    pinMode(ledPin, OUTPUT);
     pinMode(LIGHT_PIN, INPUT);
 
     Wire.begin(BME_SDA,BME_SCL);
@@ -624,21 +640,21 @@ void loop(){
         if(!idleModeActive){
             switch(screenMode){
                 case 0: {
-                    M5.Lcd.setTextSize(5);
-                    M5.Lcd.fillRect(140,20,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,20);
-                    M5.Lcd.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
-                    M5.Lcd.printf("%.1f C", temp);
+                    M5.Display.setTextSize(5);
+                    M5.Display.fillRect(140,20,180,60,NORMAL_BG);
+                    M5.Display.setCursor(140,20);
+                    M5.Display.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
+                    M5.Display.printf("%.1f C", temp);
 
-                    M5.Lcd.fillRect(140,100,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,100);
-                    M5.Lcd.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
-                    M5.Lcd.printf("%.1f %%", hum);
+                    M5.Display.fillRect(140,100,180,60,NORMAL_BG);
+                    M5.Display.setCursor(140,100);
+                    M5.Display.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
+                    M5.Display.printf("%.1f %%", hum);
 
-                    M5.Lcd.fillRect(140,180,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,180);
-                    M5.Lcd.setTextColor((lux>=800)?WHITE:(lux<=100)?GRAY:YELLOW,NORMAL_BG);
-                    M5.Lcd.printf("%d", lux);
+                    M5.Display.fillRect(140,180,180,60,NORMAL_BG);
+                    M5.Display.setCursor(140,180);
+                    M5.Display.setTextColor((lux>=800)?WHITE:(lux<=100)?GRAY:YELLOW,NORMAL_BG);
+                    M5.Display.printf("%d", lux);
                     break;
                 }
                 case 1: drawGraphScreen(); break;
