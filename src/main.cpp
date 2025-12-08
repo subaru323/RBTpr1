@@ -1,9 +1,7 @@
 // ==========================================
-// 統合版フルコード（M5Stack Basic/Gray）日本語版
+// 統合版（M5Stack Basic/Gray）
 // - BME280センサー + 照度センサー + LED自動制御
 // - OpenWeatherMap API + 6都市切替
-// - 高速化・差分描画対応
-// - 日本語表示対応（efont使用）
 // ==========================================
 
 #include <M5Unified.h>
@@ -15,9 +13,6 @@
 #include <time.h>
 #include <math.h>
 
-// ==========================================
-// WiFi & 天気設定
-// ==========================================
 const char* WIFI_SSID = "jikei-class-air";
 const char* WIFI_PASS = "2tXDsAx4";
 const char* API_KEY   = "1daa8d88352d231dd87dbd561d3c784a";
@@ -25,26 +20,21 @@ const char* NTP_SERVER = "ntp.nict.jp";
 const long GMT_OFFSET_SEC = 9*3600;
 const int DAYLIGHT_OFFSET_SEC = 0;
 
-// 都市リスト（日本語名）
 struct CityInfo {
-    String nameJP;
-    String nameEN;
+    String name;
     String id;
 };
 CityInfo cities[] = {
-    {"大阪", "Osaka",   "1853909"},
-    {"東京", "Tokyo",   "1850147"},
-    {"名古屋", "Nagoya",  "1856057"},
-    {"札幌", "Sapporo", "2128295"},
-    {"福岡", "Fukuoka", "1863967"},
-    {"那覇", "Naha",    "1894616"}
+    {"Osaka",   "1853909"},
+    {"Tokyo",   "1850147"},
+    {"Nagoya",  "1856057"},
+    {"Sapporo", "2128295"},
+    {"Fukuoka", "1863967"},
+    {"Naha",    "1894616"}
 };
-const int NUM_CITIES = sizeof(cities)/sizeof(cities[0]);
+const int NUM_CITIES = 6;
 int cityIndex = 0;
 
-// ==========================================
-// 天気キャッシュ
-// ==========================================
 struct WeatherCache {
     bool valid = false;
     String cityName;
@@ -53,29 +43,22 @@ struct WeatherCache {
     float temp = 0.0f;
     unsigned long lastFetch = 0;
 };
-WeatherCache weatherCache[NUM_CITIES];
+WeatherCache weatherCache[6];
 
-// ==========================================
-// センサー & LED制御
-// ==========================================
 #define BME_SDA 22
 #define BME_SCL 21
 Adafruit_BME280 bme;
-
 #define LIGHT_PIN 36
 constexpr int LIGHT_THRESHOLD = 100;
+constexpr int LUX_MAX = 2000;
 constexpr int ledPin = 25;
 
-// データ保管
 constexpr int MAX_DATA_POINTS = 60;
 float tempData[MAX_DATA_POINTS];
 float humData[MAX_DATA_POINTS];
 float luxData[MAX_DATA_POINTS];
 int dataIndex = 0;
 
-// ==========================================
-// UI / 色
-// ==========================================
 #define NORMAL_BG M5.Lcd.color565(210,180,140)
 #define BLACK   M5.Lcd.color565(0,0,0)
 #define WHITE   M5.Lcd.color565(255,255,255)
@@ -88,10 +71,7 @@ int dataIndex = 0;
 #define GRAY    M5.Lcd.color565(100,100,100)
 #define CYAN    M5.Lcd.color565(0,255,255)
 
-// ==========================================
-// 画面モード / タイマー
-// ==========================================
-int screenMode = 0; // 0 通常, 1 グラフ, 2 統計, 3 天気
+int screenMode = 0;
 const int NUM_SCREENS = 4;
 
 unsigned long lastUpdate = 0;
@@ -100,7 +80,6 @@ unsigned long lastWeatherUpdate = 0;
 constexpr unsigned long UPDATE_WEATHER_INTERVAL = 1800000;
 unsigned long lastInteraction = 0;
 
-// アイドル顔
 unsigned long lastIdleUpdate = 0;
 constexpr unsigned long IDLE_TIMEOUT = 60000;
 bool idleModeActive = false;
@@ -108,22 +87,16 @@ bool eyesOpen = true;
 unsigned long lastBlinkTime = 0;
 const int BLINK_DURATION = 180;
 
-// 一時メッセージ
 unsigned long msgStartMillis = 0;
 unsigned long msgDuration = 1200;
-String msgText = "";
 int msgX=200, msgY=10, msgW=120, msgH=20;
 bool msgActive = false;
 
-// 差分描画用
 int lastDisplayedCityIndex = -1;
 String lastDisplayedSymbol = "";
 String lastDisplayedDescription = "";
 float lastDisplayedTemp = NAN;
 
-// ==========================================
-// プロトタイプ宣言
-// ==========================================
 void drawNormalScreen();
 void drawGraphScreen();
 void drawStatsScreen();
@@ -133,19 +106,13 @@ void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String 
 bool initBME280();
 void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weatherSymbol);
 String getWeatherSymbol(String description);
-String getWeatherIcon(String symbol);
-String getWeatherDescJP(String description);
 void requestWeatherFetchNow(int cityIdx);
 void scheduleWeatherFetchForCity(int cityIdx);
 void connectWiFi();
-void updateWeatherUrlForCity(int idx, String &outUrl);
 void showTempMessage(const String &text, int duration=1200);
 void checkTempMessage();
 void resetStats();
 
-// ==========================================
-// 一時メッセージ
-// ==========================================
 void showTempMessage(const String &text, int duration){
     M5.Lcd.fillRect(msgX, msgY, msgW, msgH, NORMAL_BG);
     M5.Lcd.setCursor(msgX+2, msgY+2);
@@ -155,8 +122,8 @@ void showTempMessage(const String &text, int duration){
     msgStartMillis = millis();
     msgDuration = duration;
     msgActive = true;
-    msgText = text;
 }
+
 void checkTempMessage(){
     if(msgActive && millis() - msgStartMillis >= msgDuration){
         M5.Lcd.fillRect(msgX, msgY, msgW, msgH, NORMAL_BG);
@@ -164,9 +131,6 @@ void checkTempMessage(){
     }
 }
 
-// ==========================================
-// BME280 初期化
-// ==========================================
 bool initBME280(){
     byte possibleAddresses[] = {0x76, 0x77, 0x75};
     for(byte i=0;i<3;i++){
@@ -175,13 +139,10 @@ bool initBME280(){
             return true;
         }
     }
-    showTempMessage("BME接続失敗", 900);
+    showTempMessage("BME Error", 900);
     return false;
 }
 
-// ==========================================
-// 天気アイコン / シンボル / 日本語変換
-// ==========================================
 String getWeatherSymbol(String description){
     String d = description; d.toLowerCase();
     if(d.indexOf("clear") != -1) return "SUN";
@@ -191,61 +152,25 @@ String getWeatherSymbol(String description){
     if(d.indexOf("thun") != -1 || d.indexOf("tstorm") != -1) return "THTR";
     return "UNK";
 }
-String getWeatherIcon(String symbol){
-    if(symbol=="SUN") return "☀";
-    if(symbol=="CLD") return "☁";
-    if(symbol=="RAIN") return "☂";
-    if(symbol=="SNOW") return "❄";
-    if(symbol=="THTR") return "⚡";
-    return "❓";
-}
-String getWeatherDescJP(String description){
-    String d = description; d.toLowerCase();
-    if(d.indexOf("clear") != -1) return "晴れ";
-    if(d.indexOf("cloud") != -1) return "曇り";
-    if(d.indexOf("rain") != -1) return "雨";
-    if(d.indexOf("drizzle") != -1) return "霧雨";
-    if(d.indexOf("snow") != -1) return "雪";
-    if(d.indexOf("thun") != -1 || d.indexOf("tstorm") != -1) return "雷雨";
-    return "不明";
+
+void connectWiFi(){
+    showTempMessage("WiFi...");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    unsigned long start = millis();
+    while(WiFi.status() != WL_CONNECTED && millis()-start < 8000) delay(150);
+    if(WiFi.status() == WL_CONNECTED) showTempMessage("WiFi OK", 700);
+    else showTempMessage("WiFi Fail", 800);
 }
 
-// ==========================================
-// URL作成
-// ==========================================
-void updateWeatherUrlForCity(int idx, String &outUrl){
-    outUrl = "http://api.openweathermap.org/data/2.5/weather?id=" + cities[idx].id +
-             "&units=metric&lang=ja&appid=" + String(API_KEY);
-}
-
-// ==========================================
-// 都市切替処理
-// ==========================================
-void scheduleWeatherFetchForCity(int cityIdx){
-    if(weatherCache[cityIdx].valid){
-        drawWeatherScreenOptimized(cityIdx, false);
-    } else {
-        M5.Lcd.fillScreen(NORMAL_BG);
-        M5.Lcd.setTextColor(BLACK, NORMAL_BG);
-        M5.Lcd.setTextSize(4);
-        M5.Lcd.setCursor(20, 20);
-        M5.Lcd.printf("[%s]", cities[cityIdx].nameJP.c_str());
-        M5.Lcd.setCursor(20, 110);
-        M5.Lcd.printf("取得中...");
-    }
-    requestWeatherFetchNow(cityIdx);
-}
-
-// ==========================================
-// 天気取得
-// ==========================================
 void requestWeatherFetchNow(int cityIdx){
-    String url; updateWeatherUrlForCity(cityIdx, url);
+    String url = "http://api.openweathermap.org/data/2.5/weather?id=" + cities[cityIdx].id +
+                 "&units=metric&lang=en&appid=" + String(API_KEY);
 
     if(WiFi.status() != WL_CONNECTED){
         connectWiFi();
         if(WiFi.status() != WL_CONNECTED){
-            showTempMessage("WiFi未接続", 900);
+            showTempMessage("No WiFi", 900);
             return;
         }
     }
@@ -257,37 +182,33 @@ void requestWeatherFetchNow(int cityIdx){
         String payload = http.getString();
         StaticJsonDocument<1024> doc;
         if(!deserializeJson(doc, payload)){
-            WeatherCache c;
-            c.valid = true;
-            c.cityName = cities[cityIdx].nameJP;
-            const char* desc = doc["weather"][0]["description"] | "NoDesc";
-            c.description = String(desc);
-            c.symbol = getWeatherSymbol(c.description);
-            c.temp = doc["main"]["temp"] | 0.0f;
-            c.lastFetch = millis();
-            weatherCache[cityIdx] = c;
+            weatherCache[cityIdx].valid = true;
+            weatherCache[cityIdx].cityName = cities[cityIdx].name;
+            weatherCache[cityIdx].description = String(doc["weather"][0]["description"] | "NoDesc");
+            weatherCache[cityIdx].symbol = getWeatherSymbol(weatherCache[cityIdx].description);
+            weatherCache[cityIdx].temp = doc["main"]["temp"] | 0.0f;
+            weatherCache[cityIdx].lastFetch = millis();
             drawWeatherScreenOptimized(cityIdx, false);
-        } else showTempMessage("JSONエラー", 800);
-    } else showTempMessage("HTTPエラー", 800);
+        } else showTempMessage("JSON err", 800);
+    } else showTempMessage("HTTP err", 800);
     http.end();
 }
 
-// ==========================================
-// WiFi接続
-// ==========================================
-void connectWiFi(){
-    showTempMessage("WiFi接続中");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    unsigned long start = millis();
-    while(WiFi.status() != WL_CONNECTED && millis()-start < 8000) delay(150);
-    if(WiFi.status() == WL_CONNECTED) showTempMessage("WiFi接続完了", 700);
-    else showTempMessage("WiFi接続失敗", 800);
+void scheduleWeatherFetchForCity(int cityIdx){
+    if(weatherCache[cityIdx].valid){
+        drawWeatherScreenOptimized(cityIdx, false);
+    } else {
+        M5.Lcd.fillScreen(NORMAL_BG);
+        M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+        M5.Lcd.setTextSize(4);
+        M5.Lcd.setCursor(20, 20);
+        M5.Lcd.printf("[%s]", cities[cityIdx].name.c_str());
+        M5.Lcd.setCursor(20, 110);
+        M5.Lcd.printf("Fetching...");
+    }
+    requestWeatherFetchNow(cityIdx);
 }
 
-// ==========================================
-// 天気描画
-// ==========================================
 void drawWeatherFullFromCache(int cityIdx){
     WeatherCache &c = weatherCache[cityIdx];
     M5.Lcd.fillScreen(NORMAL_BG);
@@ -297,13 +218,9 @@ void drawWeatherFullFromCache(int cityIdx){
     M5.Lcd.setCursor(20, 20);
     M5.Lcd.printf("[%s]", c.cityName.c_str());
 
-    M5.Lcd.setTextSize(6);
-    M5.Lcd.setCursor(20, 70);
-    M5.Lcd.print(getWeatherIcon(c.symbol));
-
     M5.Lcd.setTextSize(3);
-    M5.Lcd.setCursor(80, 85);
-    M5.Lcd.printf("%s", getWeatherDescJP(c.description).c_str());
+    M5.Lcd.setCursor(20, 85);
+    M5.Lcd.printf("%s", c.description.c_str());
 
     M5.Lcd.setTextSize(6);
     M5.Lcd.setCursor(70, 140);
@@ -322,7 +239,7 @@ void drawWeatherScreenOptimized(int cityIdx, bool force){
         M5.Lcd.setTextSize(3);
         M5.Lcd.setCursor(20, 110);
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
-        M5.Lcd.printf("データなし");
+        M5.Lcd.printf("No Data");
         lastDisplayedCityIndex = -1;
         return;
     }
@@ -332,43 +249,32 @@ void drawWeatherScreenOptimized(int cityIdx, bool force){
         return;
     }
 
-    if(c.symbol != lastDisplayedSymbol){
-        M5.Lcd.fillRect(20,70,80,100,NORMAL_BG);
-        M5.Lcd.setTextSize(6);
-        M5.Lcd.setCursor(20,70);
-        M5.Lcd.print(getWeatherIcon(c.symbol));
-        lastDisplayedSymbol = c.symbol;
-    }
-
     if(c.description != lastDisplayedDescription){
-        M5.Lcd.fillRect(120,80,180,40,NORMAL_BG);
+        M5.Lcd.fillRect(20,80,280,40,NORMAL_BG);
         M5.Lcd.setTextSize(3);
-        M5.Lcd.setCursor(130,85);
+        M5.Lcd.setCursor(20,85);
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
-        M5.Lcd.printf("%s", getWeatherDescJP(c.description).c_str());
+        M5.Lcd.printf("%s", c.description.c_str());
         lastDisplayedDescription = c.description;
     }
 
     if(isnan(lastDisplayedTemp) || fabs(c.temp - lastDisplayedTemp) >= 0.1f){
-        M5.Lcd.fillRect(70,150,200,80,NORMAL_BG);
+        M5.Lcd.fillRect(70,140,200,80,NORMAL_BG);
         M5.Lcd.setTextSize(6);
-        M5.Lcd.setCursor(70,160);
+        M5.Lcd.setCursor(70,140);
         M5.Lcd.setTextColor(BLACK, NORMAL_BG);
         M5.Lcd.printf("%.1f C", c.temp);
         lastDisplayedTemp = c.temp;
     }
 }
 
-// ==========================================
-// 通常 / グラフ / 統計 画面
-// ==========================================
 void drawNormalScreen(){
     M5.Lcd.fillScreen(NORMAL_BG);
     M5.Lcd.setTextColor(BLACK, NORMAL_BG);
     M5.Lcd.setTextSize(3);
-    M5.Lcd.setCursor(30, 30);  M5.Lcd.printf("温度:");
-    M5.Lcd.setCursor(30,110);  M5.Lcd.printf("湿度:");
-    M5.Lcd.setCursor(30,190);  M5.Lcd.printf("照度:");
+    M5.Lcd.setCursor(30, 30);  M5.Lcd.printf("Temp:");
+    M5.Lcd.setCursor(30,110);  M5.Lcd.printf("Hum :");
+    M5.Lcd.setCursor(30,190);  M5.Lcd.printf("Light:");
 }
 
 void drawGraphScreen(){
@@ -379,7 +285,7 @@ void drawGraphScreen(){
     constexpr int baseY=220,width=300,startX=10;
     float tempScale = baseY / 30.0;
     float humScale = baseY / 100.0;
-    float luxScale = baseY / 2000.0;
+    float luxScale = baseY / 100.0;
 
     M5.Lcd.fillRect(startX,0,width,baseY+20,NORMAL_BG);
 
@@ -397,8 +303,10 @@ void drawGraphScreen(){
         int yH2 = baseY - (int)(humData[idx2]*humScale);
         M5.Lcd.drawLine(x1, yH1, x2, yH2, BLUE);
 
-        int yL1 = baseY - (int)(luxData[idx1]*luxScale);
-        int yL2 = baseY - (int)(luxData[idx2]*luxScale);
+        float lux1Pct = (luxData[idx1] / LUX_MAX) * 100.0f;
+        float lux2Pct = (luxData[idx2] / LUX_MAX) * 100.0f;
+        int yL1 = baseY - (int)(lux1Pct*luxScale);
+        int yL2 = baseY - (int)(lux2Pct*luxScale);
         M5.Lcd.drawLine(x1, yL1, x2, yL2, YELLOW);
     }
 }
@@ -412,7 +320,13 @@ void drawStatsScreen(){
     for(int i=0;i<MAX_DATA_POINTS;i++){
         if(tempData[i]!=0){ sumT += tempData[i]; maxT = max(maxT,tempData[i]); minT=min(minT,tempData[i]); countT++; }
         if(humData[i]!=0){ sumH += humData[i]; maxH = max(maxH,humData[i]); minH=min(minH,humData[i]); countH++; }
-        if(luxData[i]!=0){ sumL += luxData[i]; maxL = max(maxL,luxData[i]); minL=min(minL,luxData[i]); countL++; }
+        if(luxData[i]!=0){ 
+            float luxPct = (luxData[i] / LUX_MAX) * 100.0f;
+            sumL += luxPct; 
+            maxL = max(maxL, luxPct); 
+            minL = min(minL, luxPct); 
+            countL++; 
+        }
     }
 
     float avgT = (countT>0)? sumT/countT : 0;
@@ -422,9 +336,9 @@ void drawStatsScreen(){
 
     M5.Lcd.setTextSize(3);
     M5.Lcd.setTextColor(BLACK,NORMAL_BG);
-    M5.Lcd.setCursor(80,10); M5.Lcd.printf("平均");
-    M5.Lcd.setCursor(180,10); M5.Lcd.printf("最大");
-    M5.Lcd.setCursor(260,10); M5.Lcd.printf("最小");
+    M5.Lcd.setCursor(80,10); M5.Lcd.printf("AVG");
+    M5.Lcd.setCursor(180,10); M5.Lcd.printf("MAX");
+    M5.Lcd.setCursor(260,10); M5.Lcd.printf("MIN");
     M5.Lcd.drawFastHLine(5,45,310,BLACK);
 
     int y=60;
@@ -434,36 +348,26 @@ void drawStatsScreen(){
     M5.Lcd.setCursor(10,y); M5.Lcd.printf("H:"); M5.Lcd.setCursor(70,y); M5.Lcd.printf("%.1f",avgH);
     M5.Lcd.setCursor(160,y); M5.Lcd.printf("%.1f",maxH); M5.Lcd.setCursor(240,y); M5.Lcd.printf("%.1f",minH);
     y+=60;
-    M5.Lcd.setCursor(10,y); M5.Lcd.printf("L:"); M5.Lcd.setCursor(70,y); M5.Lcd.printf("%d",(int)avgL);
-    M5.Lcd.setCursor(160,y); M5.Lcd.printf("%d",(int)maxL); M5.Lcd.setCursor(240,y); M5.Lcd.printf("%d",(int)minL);
+    M5.Lcd.setCursor(10,y); M5.Lcd.printf("L:"); M5.Lcd.setCursor(70,y); M5.Lcd.printf("%d%%",(int)avgL);
+    M5.Lcd.setCursor(160,y); M5.Lcd.printf("%d%%",(int)maxL); M5.Lcd.setCursor(240,y); M5.Lcd.printf("%d%%",(int)minL);
 }
 
-// ==========================================
-// アイドル顔描画
-// ==========================================
 void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String weatherSymbol){
     int cx=160,cy=120;
     int eyeW=20,eyeH=15;
     int mouthW=60,mouthH=20;
 
     M5.Lcd.fillScreen(NORMAL_BG);
-
-    // ほっぺ
     if(temp>30 || hum>70) M5.Lcd.fillCircle(cx-50,cy+30,12,CYAN);
     M5.Lcd.fillCircle(cx-50,cy+20,15,M5.Lcd.color565(255,182,193));
     M5.Lcd.fillCircle(cx+50,cy+20,15,M5.Lcd.color565(255,182,193));
-
-    // 目
     M5.Lcd.fillEllipse(cx-40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
     M5.Lcd.fillEllipse(cx+40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
-
-    // 瞳
     if(eyesOpen){
         M5.Lcd.fillCircle(cx-40,cy-22,5,WHITE);
         M5.Lcd.fillCircle(cx+40,cy-22,5,WHITE);
     }
 
-    // 口（天気で変化）
     float mouthT = sin(millis()/200.0)*8.0;
     if(temp>30 || weatherSymbol=="SUN"){
         M5.Lcd.fillEllipse(cx,cy+40+mouthT, mouthW/2, mouthH, RED);
@@ -473,7 +377,6 @@ void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String 
         M5.Lcd.fillRect(cx-mouthW/2, cy+40+mouthT, mouthW, mouthH/2, RED);
     }
 
-    // まばたき
     unsigned long now = millis();
     if(now - lastBlinkTime > 4000){
         eyesOpen = false;
@@ -508,9 +411,6 @@ void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weather
     }
 }
 
-// ==========================================
-// データリセット
-// ==========================================
 void resetStats(){
     for(int i=0;i<MAX_DATA_POINTS;i++){ 
         tempData[i]=0.0; 
@@ -520,17 +420,11 @@ void resetStats(){
     dataIndex = 0;
 }
 
-// ==========================================
-// 初期化
-// ==========================================
 void setup(){
     auto cfg = M5.config();
     M5.begin(cfg);
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(WHITE);
-    
-    // 日本語フォント設定
-    M5.Display.setFont(&fonts::lgfxJapanGothic_24);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setTextColor(WHITE);
     
     pinMode(ledPin, OUTPUT);
     pinMode(LIGHT_PIN, INPUT);
@@ -552,14 +446,10 @@ void setup(){
     lastWeatherUpdate = millis();
 }
 
-// ==========================================
-// メインループ
-// ==========================================
 void loop(){
     M5.update();
     unsigned long now = millis();
 
-    // ボタン処理
     if(M5.BtnA.wasPressed()){
         lastInteraction = now;
         if(screenMode == 3){ 
@@ -600,7 +490,6 @@ void loop(){
         }
     }
 
-    // 1秒ごとのデータ更新
     if(now - lastUpdate >= UPDATE_INTERVAL){
         lastUpdate = now;
 
@@ -608,7 +497,6 @@ void loop(){
         float temp = tempData[prevIndex] != 0.0f ? tempData[prevIndex] : 20.0f;
         float hum  = humData[prevIndex] != 0.0f ? humData[prevIndex] : 50.0f;
 
-        // センサー読み取り
         if(bme.readTemperature() == bme.readTemperature()){
             float t = bme.readTemperature();
             float h = bme.readHumidity();
@@ -618,43 +506,41 @@ void loop(){
         
         int lux = analogRead(LIGHT_PIN); 
         if(lux<0) lux=0; 
-        if(lux>2000) lux=2000;
+        if(lux>LUX_MAX) lux=LUX_MAX;
 
-        // LED自動制御
         bool ledOn = (lux < LIGHT_THRESHOLD);
         digitalWrite(ledPin, ledOn ? HIGH : LOW);
 
-        // データ保存
         tempData[dataIndex] = temp;
         humData[dataIndex] = hum;
         luxData[dataIndex] = lux;
         dataIndex = (dataIndex + 1) % MAX_DATA_POINTS;
 
-        // 天気更新
         if(now - lastWeatherUpdate >= UPDATE_WEATHER_INTERVAL){
             requestWeatherFetchNow(cityIndex);
             lastWeatherUpdate = now;
         }
 
-        // 画面更新
         if(!idleModeActive){
             switch(screenMode){
                 case 0: {
-                    M5.Display.setTextSize(5);
-                    M5.Display.fillRect(140,20,180,60,NORMAL_BG);
-                    M5.Display.setCursor(140,20);
-                    M5.Display.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
-                    M5.Display.printf("%.1f C", temp);
+                    M5.Lcd.setTextSize(5);
+                    M5.Lcd.fillRect(140,20,180,60,NORMAL_BG);
+                    M5.Lcd.setCursor(140,20);
+                    M5.Lcd.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
+                    M5.Lcd.printf("%.1f C", temp);
 
-                    M5.Display.fillRect(140,100,180,60,NORMAL_BG);
-                    M5.Display.setCursor(140,100);
-                    M5.Display.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
-                    M5.Display.printf("%.1f %%", hum);
+                    M5.Lcd.fillRect(140,100,180,60,NORMAL_BG);
+                    M5.Lcd.setCursor(140,100);
+                    M5.Lcd.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
+                    M5.Lcd.printf("%.1f %%", hum);
 
-                    M5.Display.fillRect(140,180,180,60,NORMAL_BG);
-                    M5.Display.setCursor(140,180);
-                    M5.Display.setTextColor((lux>=800)?WHITE:(lux<=100)?GRAY:YELLOW,NORMAL_BG);
-                    M5.Display.printf("%d", lux);
+                    int luxPercent = (int)((lux / (float)LUX_MAX) * 100.0f);
+                    if(luxPercent > 100) luxPercent = 100;
+                    M5.Lcd.fillRect(140,180,180,60,NORMAL_BG);
+                    M5.Lcd.setCursor(140,180);
+                    M5.Lcd.setTextColor((luxPercent>=80)?WHITE:(luxPercent<=10)?GRAY:YELLOW,NORMAL_BG);
+                    M5.Lcd.printf("%d %%", luxPercent);
                     break;
                 }
                 case 1: drawGraphScreen(); break;
