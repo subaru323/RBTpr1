@@ -1,8 +1,8 @@
 // ==========================================
 // 統合版（M5Stack Basic/Gray）メニュー式
-// - BME280センサー + 照度センサー + LED自動制御
+// - BME280センサー + 照度センサー + LED自動制御  
 // - OpenWeatherMap API + 6都市切替
-// - メニューナビゲーション
+// - メニューナビゲーション + 生き生き顔アニメ + 方位計 + カレンダー
 // ==========================================
 
 #include <M5Unified.h>
@@ -74,8 +74,8 @@ int dataIndex = 0;
 
 int screenMode = -1;
 int menuCursor = 0;
-const int NUM_MENU_ITEMS = 4;
-String menuItems[] = {"Sensor View", "Graph", "Statistics", "Weather"};
+const int NUM_MENU_ITEMS = 6;
+String menuItems[] = {"Sensor View", "Graph", "Statistics", "Weather", "Compass", "Calendar"};
 
 unsigned long lastUpdate = 0;
 constexpr unsigned long UPDATE_INTERVAL = 1000;
@@ -84,11 +84,16 @@ constexpr unsigned long UPDATE_WEATHER_INTERVAL = 1800000;
 unsigned long lastInteraction = 0;
 
 unsigned long lastIdleUpdate = 0;
-constexpr unsigned long IDLE_TIMEOUT = 60000;
+constexpr unsigned long IDLE_TIMEOUT = 5000;
+constexpr unsigned long IDLE_TIMEOUT_COMPASS = 30000;
 bool idleModeActive = false;
 bool eyesOpen = true;
 unsigned long lastBlinkTime = 0;
 const int BLINK_DURATION = 180;
+
+bool isSurprised = false;
+unsigned long surpriseStartTime = 0;
+const int SURPRISE_DURATION = 1500;
 
 unsigned long msgStartMillis = 0;
 unsigned long msgDuration = 1200;
@@ -100,10 +105,44 @@ String lastDisplayedSymbol = "";
 String lastDisplayedDescription = "";
 float lastDisplayedTemp = NAN;
 
+void drawTimeDate(int x, int y){
+    struct tm timeInfo;
+    if(!getLocalTime(&timeInfo)) return;
+    
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+    M5.Lcd.setCursor(x, y);
+    M5.Lcd.printf("%02d/%02d", timeInfo.tm_mon+1, timeInfo.tm_mday);
+    M5.Lcd.setCursor(x, y+10);
+    M5.Lcd.printf("%02d:%02d", timeInfo.tm_hour, timeInfo.tm_min);
+}
+
+void drawBatteryIcon(int x, int y){
+    int batLevel = M5.Power.getBatteryLevel();
+    bool isCharging = M5.Power.isCharging();
+    
+    M5.Lcd.drawRect(x, y, 20, 10, BLACK);
+    M5.Lcd.fillRect(x+20, y+3, 2, 4, BLACK);
+    int fillWidth = (batLevel * 18) / 100;
+    uint16_t color = (batLevel > 50) ? GREEN : (batLevel > 20) ? ORANGE : RED;
+    M5.Lcd.fillRect(x+1, y+1, fillWidth, 8, color);
+    
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(x+25, y+2);
+    M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+    if(isCharging){
+        M5.Lcd.printf("%d%%+", batLevel);
+    } else {
+        M5.Lcd.printf("%d%%", batLevel);
+    }
+}
+
 void drawHomeScreen();
 void drawNormalScreen();
 void drawGraphScreen();
 void drawStatsScreen();
+void drawCompassScreen();
+void drawCalendarScreen();
 void drawWeatherScreenOptimized(int cityIdx, bool force);
 void drawWeatherFullFromCache(int cityIdx);
 void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String weatherSymbol);
@@ -220,15 +259,18 @@ void drawHomeScreen(){
     M5.Lcd.setCursor(80, 20);
     M5.Lcd.printf("MENU");
     
+    drawTimeDate(200, 10);
+    drawBatteryIcon(260, 10);
+    
     for(int i=0; i<NUM_MENU_ITEMS; i++){
-        int y = 70 + i*40;
+        int y = 60 + i*30;
         if(i == menuCursor){
-            M5.Lcd.fillRect(20, y-5, 280, 35, BLACK);
+            M5.Lcd.fillRect(20, y-5, 280, 28, BLACK);
             M5.Lcd.setTextColor(WHITE, BLACK);
         } else {
             M5.Lcd.setTextColor(BLACK, NORMAL_BG);
         }
-        M5.Lcd.setTextSize(3);
+        M5.Lcd.setTextSize(2);
         M5.Lcd.setCursor(30, y);
         M5.Lcd.printf("%s", menuItems[i].c_str());
     }
@@ -377,25 +419,157 @@ void drawStatsScreen(){
     M5.Lcd.setCursor(160,y); M5.Lcd.printf("%d%%",(int)maxL); M5.Lcd.setCursor(240,y); M5.Lcd.printf("%d%%",(int)minL);
 }
 
+void drawCompassScreen(){
+    M5.Lcd.fillScreen(NORMAL_BG);
+    M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+    
+    auto imu_update = M5.Imu.update();
+    if(imu_update){
+        auto data = M5.Imu.getImuData();
+        float heading = atan2(data.mag.y, data.mag.x) * 180.0 / M_PI;
+        if(heading < 0) heading += 360;
+        
+        String direction = "";
+        if(heading >= 337.5 || heading < 22.5) direction = "N";
+        else if(heading >= 22.5 && heading < 67.5) direction = "NE";
+        else if(heading >= 67.5 && heading < 112.5) direction = "E";
+        else if(heading >= 112.5 && heading < 157.5) direction = "SE";
+        else if(heading >= 157.5 && heading < 202.5) direction = "S";
+        else if(heading >= 202.5 && heading < 247.5) direction = "SW";
+        else if(heading >= 247.5 && heading < 292.5) direction = "W";
+        else direction = "NW";
+        
+        M5.Lcd.setTextSize(6);
+        M5.Lcd.setCursor(120, 60);
+        M5.Lcd.printf("%s", direction.c_str());
+        
+        M5.Lcd.setTextSize(4);
+        M5.Lcd.setCursor(80, 140);
+        M5.Lcd.printf("%.1f deg", heading);
+        
+        int cx = 160, cy = 180;
+        int r = 40;
+        M5.Lcd.drawCircle(cx, cy, r, BLACK);
+        float angle = (90 - heading) * M_PI / 180.0;
+        int ex = cx + r * cos(angle);
+        int ey = cy - r * sin(angle);
+        M5.Lcd.drawLine(cx, cy, ex, ey, RED);
+        M5.Lcd.fillCircle(ex, ey, 5, RED);
+    }
+}
+
+void drawCalendarScreen(){
+    M5.Lcd.fillScreen(NORMAL_BG);
+    M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+    
+    struct tm timeInfo;
+    if(!getLocalTime(&timeInfo)){
+        M5.Lcd.setTextSize(3);
+        M5.Lcd.setCursor(50, 100);
+        M5.Lcd.printf("No Time Data");
+        return;
+    }
+    
+    // 年月表示
+    M5.Lcd.setTextSize(4);
+    M5.Lcd.setCursor(50, 10);
+    M5.Lcd.printf("%d/%02d", timeInfo.tm_year+1900, timeInfo.tm_mon+1);
+    
+    // 曜日ヘッダー
+    M5.Lcd.setTextSize(2);
+    const char* dow[] = {"Su","Mo","Tu","We","Th","Fr","Sa"};
+    for(int i=0; i<7; i++){
+        M5.Lcd.setCursor(10 + i*45, 50);
+        M5.Lcd.printf("%s", dow[i]);
+    }
+    
+    // 月初の曜日と日数計算
+    struct tm firstDay = timeInfo;
+    firstDay.tm_mday = 1;
+    mktime(&firstDay);
+    int startDow = firstDay.tm_wday;
+    
+    int daysInMonth = 31;
+    int month = timeInfo.tm_mon;
+    if(month == 3 || month == 5 || month == 8 || month == 10) daysInMonth = 30;
+    else if(month == 1){
+        int year = timeInfo.tm_year + 1900;
+        daysInMonth = (year%4==0 && (year%100!=0 || year%400==0)) ? 29 : 28;
+    }
+    
+    // カレンダー描画
+    int day = 1;
+    for(int row=0; row<6; row++){
+        for(int col=0; col<7; col++){
+            if(row==0 && col<startDow) continue;
+            if(day > daysInMonth) break;
+            
+            int x = 10 + col*45;
+            int y = 75 + row*25;
+            
+            if(day == timeInfo.tm_mday){
+                M5.Lcd.fillRect(x-2, y-2, 40, 22, BLACK);
+                M5.Lcd.setTextColor(WHITE, BLACK);
+            } else {
+                M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+            }
+            
+            M5.Lcd.setCursor(x, y);
+            M5.Lcd.printf("%2d", day);
+            day++;
+        }
+        if(day > daysInMonth) break;
+    }
+}
+
 void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String weatherSymbol){
     int cx=160,cy=120;
     int eyeW=20,eyeH=15;
     int mouthW=60,mouthH=20;
 
     M5.Lcd.fillScreen(NORMAL_BG);
+    drawTimeDate(200, 10);
+    drawBatteryIcon(260, 10);
     
-    // 目（黒の楕円のみ）
-    M5.Lcd.fillEllipse(cx-40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
-    M5.Lcd.fillEllipse(cx+40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
+    // びっくり表情チェック
+    if(isSurprised && millis() - surpriseStartTime < SURPRISE_DURATION){
+        M5.Lcd.fillCircle(cx-40, cy-20, 18, BLACK);
+        M5.Lcd.fillCircle(cx+40, cy-20, 18, BLACK);
+        M5.Lcd.fillCircle(cx, cy+40, 25, RED);
+        return;
+    } else if(isSurprised){
+        isSurprised = false;
+    }
+    
+    // 体の揺れ
+    float bodySwayX = sin(millis()/2000.0) * 12.0;
+    float bodySwayY = cos(millis()/2500.0) * 6.0;
+    
+    // 目の移動（3秒ごとにランダム変更）
+    static int eyeLookX = 0;
+    static int eyeLookY = 0;
+    static unsigned long lastEyeMove = 0;
+    if(millis() - lastEyeMove > 3000){
+        eyeLookX = random(-12, 13);
+        eyeLookY = random(-6, 7);
+        lastEyeMove = millis();
+    }
+    
+    int faceX = cx + bodySwayX;
+    int faceY = cy + bodySwayY;
+    
+    // 目（黒の楕円のみ、移動可能）
+    M5.Lcd.fillEllipse(faceX-40+eyeLookX, faceY-20+eyeLookY, eyeW, eyesOpen ? eyeH : 2, BLACK);
+    M5.Lcd.fillEllipse(faceX+40+eyeLookX, faceY-20+eyeLookY, eyeW, eyesOpen ? eyeH : 2, BLACK);
 
-    // 口（天気で変化）
-    float mouthT = sin(millis()/200.0)*8.0;
+    // 口（天気で変化、振幅縮小）
+    float mouthT = sin(millis()/200.0)*3.0;
     if(temp>30 || weatherSymbol=="SUN"){
-        M5.Lcd.fillEllipse(cx,cy+40+mouthT, mouthW/2, mouthH, RED);
+        M5.Lcd.fillEllipse(faceX, faceY+40+mouthT, mouthW/2, mouthH, RED);
     } else if(hum>70 || weatherSymbol=="RAIN"){
-        M5.Lcd.drawLine(cx-mouthW/2, cy+40+mouthT, cx+mouthW/2, cy+40+mouthT, RED);
+        M5.Lcd.drawLine(faceX-mouthW/2, faceY+40+mouthT, faceX+mouthW/2, faceY+40+mouthT, RED);
     } else {
-        M5.Lcd.fillRect(cx-mouthW/2, cy+40+mouthT, mouthW, mouthH/2, RED);
+        M5.Lcd.fillRect(faceX-mouthW/2, faceY+40+mouthT, mouthW, mouthH/2, RED);
     }
 
     // まばたき
@@ -411,7 +585,9 @@ void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String 
 
 void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weatherSymbol){
     unsigned long now = millis();
-    if(now - lastInteraction > IDLE_TIMEOUT){
+    unsigned long timeout = (screenMode == 4) ? IDLE_TIMEOUT_COMPASS : IDLE_TIMEOUT;
+    
+    if(now - lastInteraction > timeout){
         if(!idleModeActive){
             idleModeActive = true;
             lastIdleUpdate = now;
@@ -430,6 +606,8 @@ void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weather
                     case 1: drawGraphScreen(); break;
                     case 2: drawStatsScreen(); break;
                     case 3: drawWeatherScreenOptimized(cityIndex, true); break;
+                    case 4: drawCompassScreen(); break;
+                    case 5: drawCalendarScreen(); break;
                 }
             }
         }
@@ -495,6 +673,8 @@ void loop(){
                 case 1: drawGraphScreen(); break;
                 case 2: drawStatsScreen(); break;
                 case 3: drawWeatherScreenOptimized(cityIndex, true); break;
+                case 4: drawCompassScreen(); break;
+                case 5: drawCalendarScreen(); break;
             }
         } else {
             screenMode = -1;
@@ -515,6 +695,19 @@ void loop(){
 
     if(now - lastUpdate >= UPDATE_INTERVAL){
         lastUpdate = now;
+
+        // 加速度センサーで揺さぶり検出
+        auto imu_update = M5.Imu.update();
+        if(imu_update){
+            auto data = M5.Imu.getImuData();
+            float accelMag = sqrt(data.accel.x * data.accel.x + 
+                                  data.accel.y * data.accel.y + 
+                                  data.accel.z * data.accel.z);
+            if(accelMag > 1.5 && idleModeActive){
+                isSurprised = true;
+                surpriseStartTime = millis();
+            }
+        }
 
         int prevIndex = (dataIndex + MAX_DATA_POINTS - 1) % MAX_DATA_POINTS;
         float temp = tempData[prevIndex] != 0.0f ? tempData[prevIndex] : 20.0f;
@@ -568,6 +761,12 @@ void loop(){
         }
         else if(!idleModeActive && screenMode == 3){
             drawWeatherScreenOptimized(cityIndex, false);
+        }
+        else if(!idleModeActive && screenMode == 4){
+            drawCompassScreen();
+        }
+        else if(!idleModeActive && screenMode == 5){
+            drawCalendarScreen();
         }
 
         checkTempMessage();
