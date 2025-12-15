@@ -1,7 +1,8 @@
 // ==========================================
-// 統合版（M5Stack Basic/Gray）
+// 統合版（M5Stack Basic/Gray）メニュー式
 // - BME280センサー + 照度センサー + LED自動制御
 // - OpenWeatherMap API + 6都市切替
+// - メニューナビゲーション
 // ==========================================
 
 #include <M5Unified.h>
@@ -71,8 +72,10 @@ int dataIndex = 0;
 #define GRAY    M5.Lcd.color565(100,100,100)
 #define CYAN    M5.Lcd.color565(0,255,255)
 
-int screenMode = 0;
-const int NUM_SCREENS = 4;
+int screenMode = -1;
+int menuCursor = 0;
+const int NUM_MENU_ITEMS = 4;
+String menuItems[] = {"Sensor View", "Graph", "Statistics", "Weather"};
 
 unsigned long lastUpdate = 0;
 constexpr unsigned long UPDATE_INTERVAL = 1000;
@@ -97,6 +100,7 @@ String lastDisplayedSymbol = "";
 String lastDisplayedDescription = "";
 float lastDisplayedTemp = NAN;
 
+void drawHomeScreen();
 void drawNormalScreen();
 void drawGraphScreen();
 void drawStatsScreen();
@@ -207,6 +211,27 @@ void scheduleWeatherFetchForCity(int cityIdx){
         M5.Lcd.printf("Fetching...");
     }
     requestWeatherFetchNow(cityIdx);
+}
+
+void drawHomeScreen(){
+    M5.Lcd.fillScreen(NORMAL_BG);
+    M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+    M5.Lcd.setTextSize(4);
+    M5.Lcd.setCursor(80, 20);
+    M5.Lcd.printf("MENU");
+    
+    for(int i=0; i<NUM_MENU_ITEMS; i++){
+        int y = 70 + i*40;
+        if(i == menuCursor){
+            M5.Lcd.fillRect(20, y-5, 280, 35, BLACK);
+            M5.Lcd.setTextColor(WHITE, BLACK);
+        } else {
+            M5.Lcd.setTextColor(BLACK, NORMAL_BG);
+        }
+        M5.Lcd.setTextSize(3);
+        M5.Lcd.setCursor(30, y);
+        M5.Lcd.printf("%s", menuItems[i].c_str());
+    }
 }
 
 void drawWeatherFullFromCache(int cityIdx){
@@ -358,16 +383,12 @@ void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String 
     int mouthW=60,mouthH=20;
 
     M5.Lcd.fillScreen(NORMAL_BG);
-    if(temp>30 || hum>70) M5.Lcd.fillCircle(cx-50,cy+30,12,CYAN);
-    M5.Lcd.fillCircle(cx-50,cy+20,15,M5.Lcd.color565(255,182,193));
-    M5.Lcd.fillCircle(cx+50,cy+20,15,M5.Lcd.color565(255,182,193));
+    
+    // 目（黒の楕円のみ）
     M5.Lcd.fillEllipse(cx-40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
     M5.Lcd.fillEllipse(cx+40,cy-20,eyeW, eyesOpen ? eyeH : 2, BLACK);
-    if(eyesOpen){
-        M5.Lcd.fillCircle(cx-40,cy-22,5,WHITE);
-        M5.Lcd.fillCircle(cx+40,cy-22,5,WHITE);
-    }
 
+    // 口（天気で変化）
     float mouthT = sin(millis()/200.0)*8.0;
     if(temp>30 || weatherSymbol=="SUN"){
         M5.Lcd.fillEllipse(cx,cy+40+mouthT, mouthW/2, mouthH, RED);
@@ -377,6 +398,7 @@ void drawIdleFaceAnimated(float temp,float hum,int lux,float tempWeather,String 
         M5.Lcd.fillRect(cx-mouthW/2, cy+40+mouthT, mouthW, mouthH/2, RED);
     }
 
+    // まばたき
     unsigned long now = millis();
     if(now - lastBlinkTime > 4000){
         eyesOpen = false;
@@ -401,11 +423,14 @@ void checkIdleFace(float temp,float hum,int lux,float tempWeather,String weather
     } else {
         if(idleModeActive){
             idleModeActive = false;
-            switch(screenMode){
-                case 0: drawNormalScreen(); break;
-                case 1: drawGraphScreen(); break;
-                case 2: drawStatsScreen(); break;
-                case 3: drawWeatherScreenOptimized(cityIndex, true); break;
+            if(screenMode == -1) drawHomeScreen();
+            else {
+                switch(screenMode){
+                    case 0: drawNormalScreen(); break;
+                    case 1: drawGraphScreen(); break;
+                    case 2: drawStatsScreen(); break;
+                    case 3: drawWeatherScreenOptimized(cityIndex, true); break;
+                }
             }
         }
     }
@@ -441,7 +466,7 @@ void setup(){
 
     for(int i=0;i<NUM_CITIES;i++) weatherCache[i].valid = false;
 
-    drawNormalScreen();
+    drawHomeScreen();
     requestWeatherFetchNow(cityIndex);
     lastWeatherUpdate = millis();
 }
@@ -452,41 +477,39 @@ void loop(){
 
     if(M5.BtnA.wasPressed()){
         lastInteraction = now;
-        if(screenMode == 3){ 
-            cityIndex = (cityIndex + NUM_CITIES - 1) % NUM_CITIES; 
-            scheduleWeatherFetchForCity(cityIndex); 
-        } else { 
-            screenMode = (screenMode + NUM_SCREENS - 1) % NUM_SCREENS; 
-            if(!idleModeActive){ 
-                switch(screenMode){
-                    case 0: drawNormalScreen(); break;
-                    case 1: drawGraphScreen(); break;
-                    case 2: drawStatsScreen(); break;
-                    case 3: drawWeatherScreenOptimized(cityIndex, true); break;
-                }
-            } 
+        if(screenMode == -1){
+            menuCursor = (menuCursor + NUM_MENU_ITEMS - 1) % NUM_MENU_ITEMS;
+            drawHomeScreen();
+        } else if(screenMode == 3){
+            cityIndex = (cityIndex + NUM_CITIES - 1) % NUM_CITIES;
+            scheduleWeatherFetchForCity(cityIndex);
         }
     }
-    if(M5.BtnB.wasPressed()){ 
-        lastInteraction = now; 
-        screenMode = 0; 
-        if(!idleModeActive) drawNormalScreen(); 
+    
+    if(M5.BtnB.wasPressed()){
+        lastInteraction = now;
+        if(screenMode == -1){
+            screenMode = menuCursor;
+            switch(screenMode){
+                case 0: drawNormalScreen(); break;
+                case 1: drawGraphScreen(); break;
+                case 2: drawStatsScreen(); break;
+                case 3: drawWeatherScreenOptimized(cityIndex, true); break;
+            }
+        } else {
+            screenMode = -1;
+            drawHomeScreen();
+        }
     }
+    
     if(M5.BtnC.wasPressed()){
         lastInteraction = now;
-        if(screenMode == 3){ 
-            cityIndex = (cityIndex + 1) % NUM_CITIES; 
-            scheduleWeatherFetchForCity(cityIndex); 
-        } else { 
-            screenMode = (screenMode + 1) % NUM_SCREENS; 
-            if(!idleModeActive){ 
-                switch(screenMode){
-                    case 0: drawNormalScreen(); break;
-                    case 1: drawGraphScreen(); break;
-                    case 2: drawStatsScreen(); break;
-                    case 3: drawWeatherScreenOptimized(cityIndex, true); break;
-                }
-            } 
+        if(screenMode == -1){
+            menuCursor = (menuCursor + 1) % NUM_MENU_ITEMS;
+            drawHomeScreen();
+        } else if(screenMode == 3){
+            cityIndex = (cityIndex + 1) % NUM_CITIES;
+            scheduleWeatherFetchForCity(cityIndex);
         }
     }
 
@@ -521,32 +544,30 @@ void loop(){
             lastWeatherUpdate = now;
         }
 
-        if(!idleModeActive){
-            switch(screenMode){
-                case 0: {
-                    M5.Lcd.setTextSize(5);
-                    M5.Lcd.fillRect(140,20,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,20);
-                    M5.Lcd.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
-                    M5.Lcd.printf("%.1f C", temp);
+        if(!idleModeActive && screenMode == 0){
+            M5.Lcd.setTextSize(5);
+            M5.Lcd.fillRect(140,20,180,60,NORMAL_BG);
+            M5.Lcd.setCursor(140,20);
+            M5.Lcd.setTextColor((temp>=30)?RED:(temp<=20)?CYAN:GREEN,NORMAL_BG);
+            M5.Lcd.printf("%.1f C", temp);
 
-                    M5.Lcd.fillRect(140,100,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,100);
-                    M5.Lcd.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
-                    M5.Lcd.printf("%.1f %%", hum);
+            M5.Lcd.fillRect(140,100,180,60,NORMAL_BG);
+            M5.Lcd.setCursor(140,100);
+            M5.Lcd.setTextColor((hum>=80)?PURPLE:(hum<=60)?BLUE:GREEN,NORMAL_BG);
+            M5.Lcd.printf("%.1f %%", hum);
 
-                    int luxPercent = (int)((lux / (float)LUX_MAX) * 100.0f);
-                    if(luxPercent > 100) luxPercent = 100;
-                    M5.Lcd.fillRect(140,180,180,60,NORMAL_BG);
-                    M5.Lcd.setCursor(140,180);
-                    M5.Lcd.setTextColor((luxPercent>=80)?WHITE:(luxPercent<=10)?GRAY:YELLOW,NORMAL_BG);
-                    M5.Lcd.printf("%d %%", luxPercent);
-                    break;
-                }
-                case 1: drawGraphScreen(); break;
-                case 2: drawStatsScreen(); break;
-                case 3: drawWeatherScreenOptimized(cityIndex, false); break;
-            }
+            int luxPercent = (int)((lux / (float)LUX_MAX) * 100.0f);
+            if(luxPercent > 100) luxPercent = 100;
+            M5.Lcd.fillRect(140,180,180,60,NORMAL_BG);
+            M5.Lcd.setCursor(140,180);
+            M5.Lcd.setTextColor((luxPercent>=80)?WHITE:(luxPercent<=10)?GRAY:YELLOW,NORMAL_BG);
+            M5.Lcd.printf("%d %%", luxPercent);
+        }
+        else if(!idleModeActive && screenMode == 1){
+            drawGraphScreen();
+        }
+        else if(!idleModeActive && screenMode == 3){
+            drawWeatherScreenOptimized(cityIndex, false);
         }
 
         checkTempMessage();
